@@ -39,6 +39,19 @@ describe FPM::Package::RPM do
     end
   end
 
+  describe "#summary" do
+    it "should default to description" do
+      expected = subject.description
+      insist { subject.summary } == expected
+    end
+
+    it "should return description override" do
+      subject.attributes[:rpm_summary] = "a summary"
+      expected = subject.description
+      insist { subject.summary } != expected
+    end
+  end
+
   describe "#epoch" do
     it "should default to empty" do
       insist { subject.epoch.to_s } == ""
@@ -152,6 +165,7 @@ describe FPM::Package::RPM do
         subject.dependencies << "hello >= 20"
         subject.conflicts << "bad < 2"
         subject.attributes[:rpm_os] = "fancypants"
+        subject.attributes[:rpm_summary] = "fancypants"
 
         # Make sure multi-line licenses are hacked to work in rpm (#252)
         subject.license = "this\nis\nan\example"
@@ -196,6 +210,11 @@ describe FPM::Package::RPM do
 
       it "should obey the os attribute" do
         insist { @rpmtags[:os] } == subject.attributes[:rpm_os]
+      end
+
+      it "should have a different summary and description" do
+        insist { @rpmtags[:summary] } == subject.summary
+        insist { @rpmtags[:summary] } != subject.description
       end
 
       it "should have the correct version" do
@@ -380,6 +399,10 @@ describe FPM::Package::RPM do
         #insist { @rpmtags[:epoch].first.to_s } == ""
       #end
 
+      it "should have the default summary as first line of description" do
+        insist { @rpmtags[:summary] } == @rpmtags[:description].split("\n").first
+      end
+
       it "should output a package with the no conflicts" do
         # @rpm.requires is an array of [name, op, requires] elements
         # fpm uses strings here, so convert.
@@ -433,6 +456,24 @@ describe FPM::Package::RPM do
       end
     end # dist
   end # #output
+
+  describe "prefix attribute" do
+    it "should default to slash" do
+      insist { subject.prefix } == "/"
+    end
+    it "should leave a single slash as it is" do
+      subject.attributes[:prefix] = "/"
+      insist { subject.prefix } == "/"
+    end
+    it "should leave a path without trailing slash it is" do
+      subject.attributes[:prefix] = "/foo/bar"
+      insist { subject.prefix } == "/foo/bar"
+    end
+    it "should remove trailing slashes" do
+      subject.attributes[:prefix] = "/foo/bar/"
+      insist { subject.prefix } == "/foo/bar"
+    end
+  end
 
   describe "regressions should not occur", :if => program_exists?("rpmbuild") do
     before :each do
@@ -582,8 +623,8 @@ describe FPM::Package::RPM do
       insist { subject.architecture } == "noarch" # see #architecture
       insist { subject.iteration } == "100"
       insist { subject.epoch } == 5
-      insist { subject.dependencies[0] }  == "something > 10"
-      insist { subject.dependencies[1] } == "hello >= 20"
+      insist { subject.dependencies }.include?("something > 10")
+      insist { subject.dependencies }.include?("hello >= 20")
       insist { subject.conflicts[0] } == "bad < 2"
       insist { subject.license } == @generator.license.split("\n").join(" ") # See issue #252
       insist { subject.provides[0] } == "bacon = 1.0"

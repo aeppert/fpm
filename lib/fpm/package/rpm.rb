@@ -86,6 +86,9 @@ class FPM::Package::RPM < FPM::Package
     File.read(File.expand_path(file))
   end
 
+  option "--summary", "SUMMARY",
+    "Set the RPM summary. Overrides the first line on the description if set"
+
   option "--sign", :flag, "Pass --sign to rpmbuild"
 
   option "--auto-add-directories", :flag, "Auto add directories not part of filesystem"
@@ -98,7 +101,7 @@ class FPM::Package::RPM < FPM::Package
   option "--autoprov", :flag, "Enable RPM's AutoProv option"
 
   option "--attr", "ATTRFILE",
-    "Set the attribute for a file (%attr).",
+    "Set the attribute for a file (%attr), e.g. --rpm-attr 750,user1,group1:/some/file",
     :multivalued => true, :attribute_name => :attrs
 
   option "--init", "FILEPATH", "Add FILEPATH as an init script",
@@ -117,6 +120,14 @@ class FPM::Package::RPM < FPM::Package
     "Set %filter_from_requires to the supplied REGEX." do |filter_from_requires|
     rpmbuild_filter_from_requires << filter_from_requires
     next rpmbuild_filter_from_requires
+  end
+
+  rpm_tags = []
+  option "--tag", "TAG",
+    "Adds a custom tag in the spec file as is. " \
+    "Example: --rpm-tag 'Requires(post): /usr/sbin/alternatives'" do |add_tag|
+      rpm_tags << add_tag
+    next rpm_tags
   end
 
   option "--ignore-iteration-in-dependencies", :flag,
@@ -165,11 +176,15 @@ class FPM::Package::RPM < FPM::Package
   # Replace ? with [?] to make rpm not use globs
   # Replace % with [%] to make rpm not expand macros
   def rpm_fix_name(name)
-    name = "\"#{name}\"" if name[/\s/]
-    name = name.gsub("[", "[\\[]")
-    name = name.gsub("*", "[*]")
-    name = name.gsub("?", "[?]")
-    name = name.gsub("%", "[%]")
+    name = name.gsub(/(\ |\[|\]|\*|\?|\%|\$)/, {
+      ' ' => '?',
+      '%' => '[%]',
+      '$' => '[$]',
+      '?' => '[?]',
+      '*' => '[*]',
+      '[' => '[\[]',
+      ']' => '[\]]'
+    })
   end
 
   def rpm_file_entry(file)
@@ -306,12 +321,16 @@ class FPM::Package::RPM < FPM::Package
 
   def rpm_get_trigger_type(flag)
     if (flag & (1 << 25)) == (1 << 25)
+       # RPMSENSE_TRIGGERPREIN = (1 << 25),  /*!< %triggerprein dependency. */
        :rpm_trigger_before_install
     elsif (flag & (1 << 16)) == (1 << 16)
+       # RPMSENSE_TRIGGERIN  = (1 << 16),    /*!< %triggerin dependency. */
        :rpm_trigger_after_install
     elsif (flag & (1 << 17)) == (1 << 17)
+       # RPMSENSE_TRIGGERUN  = (1 << 17),    /*!< %triggerun dependency. */
        :rpm_trigger_before_uninstall
     elsif (flag & (1 << 18)) == (1 << 18)
+       # RPMSENSE_TRIGGERPOSTUN = (1 << 18), /*!< %triggerpostun dependency. */
        :rpm_trigger_after_target_uninstall
     else
        @logger.fatal("I don't know about this triggerflag ('#{flag}')")
@@ -504,13 +523,25 @@ class FPM::Package::RPM < FPM::Package
   end # def output
 
   def prefix
-    return (attributes[:prefix] or "/")
+    if attributes[:prefix] and attributes[:prefix] != '/'
+      return attributes[:prefix].chomp('/')
+    else
+      return "/"
+    end
   end # def prefix
 
   def build_sub_dir
     return "BUILD"
     #return File.join("BUILD", prefix)
   end # def build_sub_dir
+
+  def summary
+    if !attributes[:rpm_summary]
+      return @description.split("\n").first || "_"
+    end
+
+    return attributes[:rpm_summary]
+  end # def summary
 
   def version
     if @version.kind_of?(String) and @version.include?("-")
@@ -527,19 +558,25 @@ class FPM::Package::RPM < FPM::Package
     return @epoch if @epoch.is_a?(Numeric)
 
     if @epoch.nil? or @epoch.empty?
-      logger.warn("no value for epoch is set, defaulting to nil")
       return nil
     end
 
     return @epoch
   end # def epoch
 
+  def to_s_dist;
+    attributes[:rpm_dist] ? "#{attributes[:rpm_dist]}" : "DIST";
+  end
+
   def to_s(format=nil)
     if format.nil?
-      return super("NAME-VERSION-ITERATION.DIST.ARCH.TYPE").gsub('DIST', attributes[:rpm_dist]) if attributes[:rpm_dist]
-      return super("NAME-VERSION-ITERATION.ARCH.TYPE")
+      format = if attributes[:rpm_dist]
+        "NAME-VERSION-ITERATION.DIST.ARCH.EXTENSION"
+      else
+        "NAME-VERSION-ITERATION.ARCH.EXTENSION"
+      end
     end
-    return super(format)
+    return super(format.gsub("DIST", to_s_dist))
   end # def to_s
 
   def payload_compression
@@ -552,5 +589,5 @@ class FPM::Package::RPM < FPM::Package
 
   public(:input, :output, :converted_from, :architecture, :to_s, :iteration,
          :payload_compression, :digest_algorithm, :prefix, :build_sub_dir,
-         :epoch, :version, :prefixed_path)
+         :summary, :epoch, :version, :prefixed_path)
 end # class FPM::Package::RPM

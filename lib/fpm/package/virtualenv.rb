@@ -25,6 +25,10 @@ class FPM::Package::Virtualenv < FPM::Package
   option "--other-files-dir", "DIRECTORY", "Optionally, the contents of the " \
   "specified directory may be added to the package. This is useful if the " \
   "virtualenv needs configuration files, etc.", :default => nil
+  option "--pypi-extra-url", "PYPI_EXTRA_URL",
+    "PyPi extra-index-url for pointing to your priviate PyPi",
+    :multivalued => true, :attribute_name => :virtualenv_pypi_extra_index_urls,
+    :default => nil
 
   private
 
@@ -36,7 +40,18 @@ class FPM::Package::Virtualenv < FPM::Package
     m = /^([^=]+)==([^=]+)$/.match(package)
     package_version = nil
 
-    if m
+    is_requirements_file = (File.basename(package) == "requirements.txt")
+
+    if is_requirements_file
+      if !File.file?(package)
+        raise FPM::InvalidPackageConfiguration, "Path looks like a requirements.txt, but it doesn't exist: #{package}"
+      end
+
+      package = File.join(::Dir.pwd, package) if File.dirname(package) == "."
+      package_name = File.basename(File.dirname(package))
+      logger.info("No name given. Using the directory's name", :name => package_name)
+      package_version = nil
+    elsif m
       package_name = m[1]
       package_version = m[2]
       self.version ||= package_version
@@ -72,18 +87,31 @@ class FPM::Package::Virtualenv < FPM::Package
                "pip", "distribute")
     safesystem(pip_exe, "uninstall", "-y", "distribute")
 
-    safesystem(pip_exe, "install", "-i",
-               attributes[:virtualenv_pypi],
-               package)
+    extra_index_url_args = []
+    if attributes[:virtualenv_pypi_extra_index_urls]
+      attributes[:virtualenv_pypi_extra_index_urls].each do |extra_url|
+        extra_index_url_args << "--extra-index-url" << extra_url
+      end
+    end
 
-    if package_version.nil?
+    target_args = []
+    if is_requirements_file
+      target_args << "-r" << package
+    else
+      target_args << package
+    end
+
+    pip_args = [pip_exe, "install", "-i", attributes[:virtualenv_pypi]] << extra_index_url_args << target_args
+    safesystem(*pip_args.flatten)
+
+    if ! is_requirements_file && package_version.nil?
       frozen = safesystemout(pip_exe, "freeze")
       package_version = frozen[/#{package}==[^=]+$/].split("==")[1].chomp!
       self.version ||= package_version
     end
 
     ::Dir[build_path + "/**/*"].each do |f|
-      if ! File.world_readable? f
+      if ! File.readable? f
         File.lchmod(File.stat(f).mode | 444)
       end
     end

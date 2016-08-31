@@ -8,6 +8,7 @@ require "socket" # stdlib, for Socket.gethostname
 require "shellwords" # stdlib, for Shellwords.escape
 require "erb" # stdlib, for template processing
 require "cabin" # gem "cabin"
+require "stud/temporary"
 
 # This class is the parent of all packages.
 # If you want to implement an FPM package type, you'll inherit from this.
@@ -155,7 +156,7 @@ class FPM::Package
     # Iterate over all the options and set defaults
     if self.class.respond_to?(:declared_options)
       self.class.declared_options.each do |option|
-        with(option.attribute_name) do |attr|
+        option.attribute_name.tap do |attr|
           # clamp makes option attributes available as accessor methods
           # do --foo-bar is available as 'foo_bar'
           # make these available as package attributes.
@@ -216,7 +217,7 @@ class FPM::Package
     return pkg
   end # def convert
 
-  # This method is invoked on a package when it has been covered to a new
+  # This method is invoked on a package when it has been converted to a new
   # package format. The purpose of this method is to do any extra conversion
   # steps, like translating dependency conditions, etc.
   def converted_from(origin)
@@ -249,7 +250,7 @@ class FPM::Package
   end # def output
 
   def staging_path(path=nil)
-    @staging_path ||= ::Dir.mktmpdir("package-#{type}-staging") #, ::Dir.pwd)
+    @staging_path ||= Stud::Temporary.directory("package-#{type}-staging")
 
     if path.nil?
       return @staging_path
@@ -259,7 +260,7 @@ class FPM::Package
   end # def staging_path
 
   def build_path(path=nil)
-    @build_path ||= ::Dir.mktmpdir("package-#{type}-build") #, ::Dir.pwd)
+    @build_path ||= Stud::Temporary.directory("package-#{type}-build")
 
     if path.nil?
       return @build_path
@@ -331,17 +332,31 @@ class FPM::Package
     return erb
   end # def template
 
-  def to_s(fmt="NAME.TYPE")
-    fmt = "NAME.TYPE" if fmt.nil?
-    fullversion = version.to_s
-    fullversion += "-#{iteration}" if iteration
-    return fmt.gsub("ARCH", architecture.to_s) \
-      .gsub("NAME", name.to_s) \
-      .gsub("FULLVERSION", fullversion) \
-      .gsub("VERSION", version.to_s) \
-      .gsub("ITERATION", iteration.to_s) \
-      .gsub("EPOCH", epoch.to_s) \
-      .gsub("TYPE", type.to_s)
+  #######################################
+  # The following methods are provided to
+  # easily override particular substitut-
+  # ions performed by to_s for subclasses
+  #######################################
+  def to_s_arch;        architecture.to_s;  end
+  def to_s_name;        name.to_s;          end
+  def to_s_fullversion; iteration ? "#{version}-#{iteration}" : "#{version}"; end
+  def to_s_version;     version.to_s;       end
+  def to_s_iteration;   iteration.to_s;     end
+  def to_s_epoch;       epoch.to_s;         end
+  def to_s_type;        type.to_s;          end
+  def to_s_extension;   type.to_s;          end
+  #######################################
+
+  def to_s(fmt=nil)
+    fmt = "NAME.EXTENSION" if fmt.nil?
+    return fmt.gsub("ARCH", to_s_arch) \
+      .gsub("NAME",         to_s_name) \
+      .gsub("FULLVERSION",  to_s_fullversion) \
+      .gsub("VERSION",      to_s_version) \
+      .gsub("ITERATION",    to_s_iteration) \
+      .gsub("EPOCH",        to_s_epoch) \
+      .gsub("TYPE",         to_s_type) \
+      .gsub("EXTENSION",    to_s_extension)
   end # def to_s
 
   def edit_file(path)
@@ -351,7 +366,7 @@ class FPM::Package
     system("#{editor} #{Shellwords.escape(path)}")
     if !$?.success?
       raise ProcessFailed.new("'#{editor}' failed (exit code " \
-                              "#{$?.exitstatus}) Full command was: "\
+                              "#{$?.exitstatus}) Full command was: " \
                               "#{command}");
     end
 
@@ -371,7 +386,7 @@ class FPM::Package
       installdir = staging_path
     end
 
-    Find.find(staging_path) do |path|
+    Find.find(installdir) do |path|
       match_path = path.sub("#{installdir.chomp('/')}/", '')
 
       attributes[:excludes].each do |wildcard|
@@ -379,7 +394,7 @@ class FPM::Package
 
         if File.fnmatch(wildcard, match_path)
           logger.info("Removing excluded path", :path => match_path, :matches => wildcard)
-          FileUtils.remove_entry_secure(path)
+          FileUtils.rm_r(path)
           Find.prune
           break
         end
